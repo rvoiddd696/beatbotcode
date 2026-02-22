@@ -1,0 +1,317 @@
+import asyncio
+import logging
+import random
+import sys
+import sqlite3
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+
+# ==========================================
+# 1. ВСТАВЬ СЮДА СВОЙ ТОКЕН ОТ BOTFATHER
+# ==========================================
+TOKEN = "8538110472:AAEq2lmcU17ilbREi85b2hTceljPtb2sPlc"
+
+# ССЫЛКА НА ТВОЕ WEB-ПРИЛОЖЕНИЕ (Пока тут заглушка, потом поменяем на твою)
+WEB_APP_URL = "https://example.com" 
+
+# ==========================================
+# 2. БАЗА ДАННЫХ И СТАТИСТИКА (SQLite3)
+# ==========================================
+def init_db():
+    conn = sqlite3.connect("bot_stats.db")
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            freestyle_interval INTEGER DEFAULT 5,
+            challenges_done INTEGER DEFAULT 0,
+            words_freestyled INTEGER DEFAULT 0
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def get_user(user_id):
+    conn = sqlite3.connect("bot_stats.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    user = cursor.fetchone()
+    if not user:
+        cursor.execute("INSERT INTO users (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        user = (user_id, 5, 0, 0)
+    conn.close()
+    return {"interval": user[1], "challenges": user[2], "words": user[3]}
+
+def update_stat(user_id, field, value):
+    conn = sqlite3.connect("bot_stats.db")
+    cursor = conn.cursor()
+    cursor.execute(f"UPDATE users SET {field} = {field} + ? WHERE user_id = ?", (value, user_id))
+    conn.commit()
+    conn.close()
+
+def set_interval(user_id, interval):
+    conn = sqlite3.connect("bot_stats.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET freestyle_interval = ? WHERE user_id = ?", (interval, user_id))
+    conn.commit()
+    conn.close()
+
+def get_rank(words_count):
+    if words_count < 50: return "Новичок с FL Studio 👶"
+    elif words_count < 150: return "Локальный МС 🎤"
+    elif words_count < 300: return "Уличный Поэт 🏙"
+    elif words_count < 600: return "Мастер Флоу 🌊"
+    else: return "Рэп-Божество 👑"
+
+# ==========================================
+# 3. БАЗА ДАННЫХ ДЛЯ ГЕНЕРАЦИИ
+# ==========================================
+GENRES = [
+    "Грайм (Grime)", "Бейслайн (Bassline)", "UK Drill", "Мрачный Трап (Dark Trap)", 
+    "Мелодичный Рэп", "Олдскул Бум-Бэп", "Фонк (Phonk)", "Джерси Клаб (Jersey Club)", 
+    "UK Garage", "Jungle", "Drum & Bass (D&B)", "UK Funky", "Classic Dubstep", 
+    "2-Step Garage", "Afroswing"
+]
+
+MOODS = [
+    "Агрессивное 😡", "Мрачное 🌑", "Качающее (Bouncy) 🕺", "Космическое/Странное 👽", 
+    "Меланхоличное 🌧", "Эпичное 🏰", "Тревожное 👁", "Чиловое (Chill) 🛋", 
+    "Ностальгическое 📼", "Психоделическое 🌀", "Клубное/Танцевальное 🪩"
+]
+
+INSTRUMENTS = [
+    "Мрачное пианино 🎹", "Перегруженный 808-й бас 🔊", "Аналоговый синтезатор 📻", 
+    "Акустическая гитара 🎸", "Флейта 🎵", "Скрипка 🎻", "Электрогитара ⚡️", 
+    "Вокальные чопы (нарезки) 🗣", "Колокольчики (Bells) 🔔", "Странный FX звук 🛸"
+]
+
+CONDITIONS = [
+    "Используй семпл выстрела 🔫",
+    "Перегрузи бас (Distortion) до предела 🔊",
+    "Напиши главную мелодию только из 3 нот 🎹",
+    "Сделай мощный глитч-эффект на ударных 💥",
+    "Используй любой звук из реальной жизни (например, стук ключей) 🔑",
+    "Сделай яму (breakdown) вообще без ударных 🕳",
+    "Добавь вокальный сэмпл на фон и сильно занизь ему питч 🗣",
+    "Сделай битсвитч (резкую смену ритма или мелодии) в середине 🔀",
+    "Используй сайдчейн на каждый инструмент от кика 🗜",
+    "Сделай так, чтобы хэты (hi-hats) играли задом наперед (Reverse) ⏪",
+    "Срежь все высокие частоты на мастере на 4 такта (эффект радио) 📻",
+    "Используй аккорд из 4 и более нот для гармонии 🎼",
+    "Добавь звук сирены или полицейской мигалки 🚨",
+    "Заставь бас 'скользить' (Glide/Slide) минимум на октаву вверх 🎢"
+]
+
+FREESTYLE_WORDS = [
+    "Бас", "Студия", "Дедлайн", "Город", "Тень", "Экран", "Шум", "Ритм", "Провод", 
+    "Свет", "Визуал", "Проект", "Холод", "Скорость", "Синтезатор", "Матрица", "Код", 
+    "Стиль", "Микрофон", "Ночь", "Дождь", "Пульс", "Искра", "Движ", "Сцена", "Схема", 
+    "Глитч", "Бит", "Эхо", "Трасса", "Пепел", "Флоу", "Толпа", "Кадры", "Сон", 
+    "Коннект", "Ключ", "Замок", "Огонь", "Зеркало", "Сигнал", "Частота", "Нейросеть", 
+    "Блок", "Майк", "Улица", "Голос", "Память", "След", "Время", "Процессор", "Сэмпл", 
+    "Петля", "Удар", "Вайб", "Синдикат", "Квартал", "Район", "Ствол", "Дым", "Монитор", 
+    "Секвенсор", "Плагин", "Мастеринг", "Запись", "Сведение", "Реверб", "Дилей", "Аккорд", 
+    "Нота", "Пик", "Глубина", "Пространство", "Метро", "Андеграунд", "Неон", "Прожектор", 
+    "Бетон", "Крыша", "Асфальт", "Подвал", "Кабель", "Ток", "Замыкание", "Импульс", 
+    "Синтез", "Сайдчейн", "Вокал", "Хук", "Куплет", "Панч", "Рифма", "Смысл", "Слово", 
+    "Текст", "Бумага", "Карандаш", "Телефон", "Динамик", "Мембрана", "Клуб", "Туса", 
+    "Зритель", "Капюшон", "Кроссовки", "Шаг", "Ритмика", "Темп", "Драмка", "Кик", "Снэйр", 
+    "Хэт", "Тарелка", "Железо", "Медь", "Сталь", "Лезвие", "Рана", "Шрам", "Путь", "Дорога", 
+    "Знак", "Светофор", "Перекресток", "Движение", "Трафик", "Гонка", "Мотор", "Двигатель", 
+    "Выхлоп", "Бензин", "Пламя", "Костер", "Уголь", "Пыль", "Грязь", "Снег", "Лед", "Ветер", 
+    "Буря", "Шторм", "Гром", "Молния", "Кризис", "Система", "Взлом", "Доступ", "Пароль"
+]
+
+CONCEPT_ROLES = [
+    "камеры видеонаблюдения 📹", "последнего человека на Земле 🌍", "хакера, взломавшего матрицу 💻", 
+    "уличного кота 🐈", "искусственного интеллекта, обретшего чувства 🤖", "тени 👤", 
+    "забытого всеми музыканта 🎸", "киллера на пенсии 💼", "призрака старой студии 👻"
+]
+
+CONCEPT_LOCATIONS = [
+    "в ночном метро 🚇", "на крыше небоскреба под дождем 🏙", "в заброшенной студии 🎛", 
+    "в киберпанк-городе 🌃", "в спальном районе зимой ❄️", "в бесконечной пустоте 🌌", 
+    "на заднем сиденье такси 🚕"
+]
+
+CONCEPT_TOPICS = [
+    "технологии и провода 🔌", "океан и глубина 🌊", "оружие и криминал 🔪", 
+    "время и часы ⏳", "космос и звезды ✨", "холод и лед 🧊", 
+    "азартные игры и риск 🎲", "иллюзии и сны 💭"
+]
+
+PRO_TIPS = [
+    "<b>Сатурация 808-го:</b> Чтобы бас звучал плотнее на телефонах, добавь на него легкий сатуратор (Distortion) на средних частотах (400-800 Гц).",
+    "<b>Срез саб-низа:</b> Попробуй срезать эквалайзером частоты ниже 30 Гц на мастере. Ты их почти не слышишь, но они съедают кучу громкости (Headroom).",
+    "<b>Креативный сайдчейн:</b> Сайдчейн можно вешать не только на бас! Попробуй засайдчейнить реверберацию от основного вокала.",
+    "<b>Хьюманизация (Humanize):</b> Сдвинь некоторые ноты чуть-чуть мимо сетки. Это добавит живого грува.",
+    "<b>Панорамирование хэтов:</b> Используй автоматизацию панорамы на хай-хэтах. Это расширит микс.",
+    "<b>Лейеринг снейров:</b> Склей два снейра: один хлесткий, другой с телом.",
+    "<b>Паузы решают:</b> Сделай резкую паузу перед дропом — это усилит удар в 10 раз."
+]
+
+# ==========================================
+# 4. НАСТРОЙКА ДИСПЕТЧЕРА И КЛАВИАТУР
+# ==========================================
+dp = Dispatcher()
+
+def get_main_keyboard():
+    kb = [
+        # ДОБАВЛЕНА НОВАЯ КНОПКА ДЛЯ WEB APP НА САМЫЙ ВЕРХ
+        [KeyboardButton(text="📱 Открыть Web App", web_app=WebAppInfo(url=WEB_APP_URL))],
+        [KeyboardButton(text="/challenge"), KeyboardButton(text="/freestyle")],
+        [KeyboardButton(text="/concept"), KeyboardButton(text="/tip")],
+        [KeyboardButton(text="/stats"), KeyboardButton(text="/settings")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+def get_settings_keyboard():
+    kb = [
+        [InlineKeyboardButton(text="Хардкор (3 сек)", callback_data="interval_3")],
+        [InlineKeyboardButton(text="Нормал (5 сек)", callback_data="interval_5")],
+        [InlineKeyboardButton(text="Чилл (10 сек)", callback_data="interval_10")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+def get_reroll_keyboard(action: str):
+    kb = [[InlineKeyboardButton(text="🔄 Сгенерировать другой", callback_data=f"reroll_{action}")]]
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+# ==========================================
+# 5. ЛОГИКА БОТА
+# ==========================================
+
+@dp.message(Command("start", "help"))
+async def command_start_handler(message: types.Message) -> None:
+    get_user(message.from_user.id)
+    text = (
+        "Привет! Я твой персональный генератор идей и тренажер. 🎧\n\n"
+        "🔥 <b>Теперь у меня есть собственное приложение! Жми кнопку «📱 Открыть Web App» внизу.</b>\n\n"
+        "Либо используй классические команды:\n"
+        "🎹 /challenge - Идея для бита\n"
+        "🎤 /freestyle - Тренировка флоу\n"
+        "📝 /concept - Сюжет для текста\n"
+        "💡 /tip - Совет по сведению\n"
+        "📊 /stats - Твой ранг\n"
+        "⚙️ /settings - Настройки"
+    )
+    await message.answer(text, reply_markup=get_main_keyboard(), parse_mode="HTML")
+
+def generate_challenge_text():
+    bpm = random.randint(120, 160) 
+    genre = random.choice(GENRES)
+    mood = random.choice(MOODS)
+    instrument = random.choice(INSTRUMENTS)
+    
+    num_conditions = random.randint(2, 3)
+    selected_conditions = random.sample(CONDITIONS, num_conditions)
+    conditions_text = "\n".join([f"🔸 {c}" for c in selected_conditions])
+
+    return (
+        "🔥 <b>Твой сложный челлендж:</b>\n\n"
+        f"<b>Жанр:</b> {genre}\n"
+        f"<b>Темп:</b> {bpm} BPM\n"
+        f"<b>Настроение:</b> {mood}\n"
+        f"<b>Главный инструмент:</b> {instrument}\n\n"
+        f"<b>Обязательные условия:</b>\n{conditions_text}\n\n"
+        "Открывай секвенсор и делай грязь! 🚀"
+    )
+
+@dp.message(Command("challenge"))
+async def challenge_handler(message: types.Message) -> None:
+    update_stat(message.from_user.id, "challenges_done", 1)
+    await message.answer(generate_challenge_text(), parse_mode="HTML", reply_markup=get_reroll_keyboard("challenge"))
+
+@dp.callback_query(F.data == "reroll_challenge")
+async def process_reroll_challenge(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text(generate_challenge_text(), parse_mode="HTML", reply_markup=get_reroll_keyboard("challenge"))
+    except:
+        pass
+    await callback.answer()
+
+@dp.message(Command("freestyle"))
+async def freestyle_handler(message: types.Message) -> None:
+    user_id = message.from_user.id
+    interval = get_user(user_id)["interval"]
+
+    await message.answer(f"🎤 Погнали! 10 слов. Смена каждые {interval} секунд.\n\nГотов? 3... 2... 1...")
+    await asyncio.sleep(3)
+
+    words_to_use = random.sample(FREESTYLE_WORDS, 10)
+
+    for i, word in enumerate(words_to_use, 1):
+        await message.answer(f"🔥 Слово [{i}/10]: <b>{word}</b>", parse_mode="HTML")
+        await asyncio.sleep(interval)
+
+    update_stat(user_id, "words_freestyled", 10)
+    rank = get_rank(get_user(user_id)["words"])
+    await message.answer(f"Уф, это было горячо! 👏\nТвой текущий ранг: <b>{rank}</b>", parse_mode="HTML")
+
+@dp.message(Command("stats"))
+async def stats_handler(message: types.Message) -> None:
+    user_data = get_user(message.from_user.id)
+    rank = get_rank(user_data["words"])
+    
+    stats_text = (
+        f"📊 <b>Твоя статистика:</b>\n\n"
+        f"🏆 <b>Ранг:</b> {rank}\n"
+        f"🎹 <b>Принято челленджей:</b> {user_data['challenges']} шт.\n"
+        f"🎤 <b>Зафристайлено слов:</b> {user_data['words']} шт.\n"
+        f"⏱ <b>Текущая скорость фристайла:</b> {user_data['interval']} сек."
+    )
+    await message.answer(stats_text, parse_mode="HTML")
+
+def generate_concept_text():
+    role = random.choice(CONCEPT_ROLES)
+    location = random.choice(CONCEPT_LOCATIONS)
+    topic = random.choice(CONCEPT_TOPICS)
+    
+    return (
+        "📝 <b>Концепт для твоего нового текста:</b>\n\n"
+        f"🎭 <b>От лица:</b> {role}\n"
+        f"📍 <b>Локация:</b> {location}\n"
+        f"🧠 <b>Главные метафоры:</b> {topic}"
+    )
+
+@dp.message(Command("concept"))
+async def concept_handler(message: types.Message) -> None:
+    await message.answer(generate_concept_text(), parse_mode="HTML", reply_markup=get_reroll_keyboard("concept"))
+
+@dp.callback_query(F.data == "reroll_concept")
+async def process_reroll_concept(callback: types.CallbackQuery):
+    try:
+        await callback.message.edit_text(generate_concept_text(), parse_mode="HTML", reply_markup=get_reroll_keyboard("concept"))
+    except:
+        pass
+    await callback.answer()
+
+@dp.message(Command("tip"))
+async def tip_handler(message: types.Message) -> None:
+    await message.answer(f"💡 <b>Продюсерская мудрость:</b>\n\n{random.choice(PRO_TIPS)}", parse_mode="HTML")
+
+@dp.message(Command("settings"))
+async def settings_handler(message: types.Message) -> None:
+    await message.answer("⚙️ Выбери интервал смены слов для фристайла:", reply_markup=get_settings_keyboard())
+
+@dp.callback_query(F.data.startswith("interval_"))
+async def process_interval_setting(callback: types.CallbackQuery):
+    new_interval = int(callback.data.split("_")[1])
+    set_interval(callback.fromuser.id if hasattr(callback, 'from_user') else callback.from_user.id, new_interval)
+    await callback.message.edit_text(f"✅ Готово! Слова во фристайле будут меняться каждые <b>{new_interval} секунд</b>.", parse_mode="HTML")
+    await callback.answer()
+
+# ==========================================
+# 6. ЗАПУСК БОТА
+# ==========================================
+async def main() -> None:
+    init_db()
+    bot = Bot(token=TOKEN)
+    print("Бот успешно запущен! Открой Telegram и напиши ему /start")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    asyncio.run(main())
