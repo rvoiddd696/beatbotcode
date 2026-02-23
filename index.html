@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BeatMaker App</title>
+    <!-- Подключаем скрипт Telegram -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <!-- Подключаем Tailwind CSS для красивого дизайна -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #0f1115; /* Темный фон как в Ableton/FL */
+            color: #e2e8f0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden; /* Запрет прокрутки */
+        }
+        .neon-box {
+            background: #1e2128;
+            border: 1px solid #3f3f46;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+        }
+        .neon-accent {
+            color: #a855f7; /* Неоново-фиолетовый */
+            text-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
+        }
+        .btn-neon {
+            background: linear-gradient(135deg, #a855f7 0%, #7e22ce 100%);
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.4);
+            transition: all 0.2s;
+        }
+        .btn-neon:active {
+            transform: scale(0.95);
+            box-shadow: 0 0 5px rgba(168, 85, 247, 0.4);
+        }
+        /* Анимация таймера */
+        .progress-bar-inner {
+            background: #a855f7;
+            box-shadow: 0 0 10px #a855f7;
+            height: 100%;
+            width: 100%;
+            transition: width 0.1s linear;
+        }
+        /* Вкладки */
+        .tab-btn { opacity: 0.5; transition: opacity 0.2s; border-bottom: 2px solid transparent; }
+        .tab-btn.active { opacity: 1; border-bottom: 2px solid #a855f7; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; animation: fadeIn 0.3s; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="flex flex-col h-screen w-full p-4">
+
+    <!-- Навигация (Вкладки) -->
+    <div class="flex justify-around mb-6 border-b border-gray-700 pb-2">
+        <button id="tab-challenge" class="tab-btn active text-lg font-bold pb-1" onclick="switchTab('challenge')">🎲 Челлендж</button>
+        <button id="tab-freestyle" class="tab-btn text-lg font-bold pb-1" onclick="switchTab('freestyle')">🎤 Фристайл</button>
+    </div>
+
+    <!-- ВКЛАДКА: ЧЕЛЛЕНДЖ -->
+    <div id="content-challenge" class="tab-content active h-full flex flex-col">
+        <div class="neon-box p-5 mb-6 flex-grow overflow-y-auto" id="challenge-card">
+            <h2 class="text-xl font-bold mb-4 text-center text-gray-400">Нажми кнопку ниже ⬇️</h2>
+        </div>
+        
+        <button onclick="generateChallenge()" class="btn-neon w-full py-4 rounded-xl text-white font-bold text-lg mb-2">
+            Сгенерировать бит
+        </button>
+    </div>
+
+    <!-- ВКЛАДКА: ФРИСТАЙЛ -->
+    <div id="content-freestyle" class="tab-content h-full flex flex-col items-center justify-center">
+        
+        <div id="freestyle-setup" class="w-full flex flex-col items-center">
+            <p class="text-gray-400 text-center mb-6">Визуальный таймер. Выбери интервал и нажми старт!</p>
+            
+            <select id="speed-select" class="w-full bg-gray-800 border border-gray-600 text-white rounded-lg p-3 mb-6 outline-none focus:border-purple-500">
+                <option value="3">Хардкор (3 сек)</option>
+                <option value="5" selected>Нормал (5 сек)</option>
+                <option value="10">Чилл (10 сек)</option>
+            </select>
+
+            <button onclick="startFreestyle()" class="btn-neon w-full py-4 rounded-xl text-white font-bold text-xl">
+                СТАРТ
+            </button>
+        </div>
+
+        <div id="freestyle-active" class="w-full hidden flex flex-col items-center justify-center h-full pb-10">
+            <div class="text-sm text-gray-400 mb-2" id="word-counter">Слово 1/15</div>
+            <div class="text-5xl font-black neon-accent mb-12 text-center break-words w-full" id="freestyle-word">ГОТОВ?</div>
+            
+            <!-- Индикатор времени (Progress bar) -->
+            <div class="w-full h-3 bg-gray-800 rounded-full overflow-hidden mb-6">
+                <div id="timer-bar" class="progress-bar-inner"></div>
+            </div>
+            
+            <button onclick="stopFreestyle()" class="text-red-400 border border-red-400 rounded-lg py-2 px-6 mt-4">Стоп</button>
+        </div>
+    </div>
+
+    <script>
+        // Инициализация Telegram Web App
+        const tg = window.Telegram.WebApp;
+        tg.expand(); // Разворачиваем на весь экран
+        tg.ready();
+
+        // Базы данных (скопированы из питона)
+        const GENRES = ["Грайм", "Бейслайн", "UK Drill", "Мрачный Трап", "UK Garage", "Jungle", "Drum & Bass"];
+        const MOODS = ["Агрессивное", "Мрачное", "Качающее", "Космическое", "Тревожное"];
+        const INSTRUMENTS = ["Мрачное пианино", "Перегруженный 808-й бас", "Аналоговый синтезатор", "Вокальные чопы", "Странный FX звук"];
+        const CONDITIONS = [
+            "Используй семпл выстрела", "Перегрузи бас (Distortion) до предела", 
+            "Сделай мощный глитч-эффект на ударных", "Сделай яму (breakdown) вообще без ударных",
+            "Сделай так, чтобы хэты играли задом наперед (Reverse)", "Добавь звук сирены"
+        ];
+        const FREESTYLE_WORDS = [
+            "Бас", "Студия", "Дедлайн", "Тень", "Экран", "Шум", "Ритм", "Провод", "Свет", "Визуал", 
+            "Проект", "Холод", "Скорость", "Синтезатор", "Матрица", "Код", "Стиль", "Микрофон", "Ночь",
+            "Пульс", "Глитч", "Бит", "Эхо", "Трасса", "Пепел", "Флоу", "Толпа", "Коннект", "Нейросеть",
+            "Секвенсор", "Плагин", "Мастеринг", "Сведение", "Реверб", "Дилей", "Метро", "Андеграунд", "Бетон"
+        ];
+
+        // Утилиты
+        function getRandomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+        function getRandom(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+        // Переключение вкладок
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById(`tab-${tabId}`).classList.add('active');
+            document.getElementById(`content-${tabId}`).classList.add('active');
+            if(tabId === 'challenge') stopFreestyle(); // останавливаем таймер если ушли
+        }
+
+        // Логика вкладки ЧЕЛЛЕНДЖ
+        function generateChallenge() {
+            const bpm = getRandomInt(120, 160);
+            const cond1 = getRandom(CONDITIONS);
+            let cond2 = getRandom(CONDITIONS);
+            while(cond1 === cond2) cond2 = getRandom(CONDITIONS);
+
+            const html = `
+                <div class="text-sm text-purple-400 font-bold tracking-widest uppercase mb-1">Жанр</div>
+                <div class="text-2xl font-bold mb-4">${getRandom(GENRES)}</div>
+                
+                <div class="flex justify-between mb-4">
+                    <div>
+                        <div class="text-xs text-gray-500 uppercase">Темп</div>
+                        <div class="text-xl font-bold">${bpm} BPM</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-xs text-gray-500 uppercase">Настроение</div>
+                        <div class="text-xl font-bold">${getRandom(MOODS)}</div>
+                    </div>
+                </div>
+
+                <div class="text-sm text-purple-400 font-bold tracking-widest uppercase mb-1 mt-4">Инструмент</div>
+                <div class="text-lg mb-4">${getRandom(INSTRUMENTS)}</div>
+
+                <div class="text-sm text-purple-400 font-bold tracking-widest uppercase mb-1">Условия</div>
+                <ul class="list-disc pl-5 text-gray-300">
+                    <li class="mb-1">${cond1}</li>
+                    <li>${cond2}</li>
+                </ul>
+            `;
+            document.getElementById('challenge-card').innerHTML = html;
+            // Легкая вибрация телефона (если поддерживается)
+            if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred('medium');
+        }
+
+        // Логика вкладки ФРИСТАЙЛ
+        let timerInterval;
+        let wordInterval;
+        let wordsLeft = 15;
+        let currentSpeed = 5;
+
+        function startFreestyle() {
+            document.getElementById('freestyle-setup').classList.add('hidden');
+            document.getElementById('freestyle-active').classList.remove('hidden');
+            
+            currentSpeed = parseInt(document.getElementById('speed-select').value);
+            wordsLeft = 15;
+            
+            nextWord();
+        }
+
+        function nextWord() {
+            if (wordsLeft <= 0) {
+                stopFreestyle();
+                document.getElementById('freestyle-setup').classList.remove('hidden');
+                document.getElementById('freestyle-active').classList.add('hidden');
+                tg.showAlert("Тренировка завершена! Отличная работа!");
+                return;
+            }
+
+            // Ставим новое слово
+            document.getElementById('freestyle-word').innerText = getRandom(FREESTYLE_WORDS);
+            document.getElementById('word-counter').innerText = `Слово ${16 - wordsLeft}/15`;
+            
+            // Сбрасываем полоску
+            const bar = document.getElementById('timer-bar');
+            bar.style.transition = 'none';
+            bar.style.width = '100%';
+            
+            // Анимация полоски
+            setTimeout(() => {
+                bar.style.transition = `width ${currentSpeed}s linear`;
+                bar.style.width = '0%';
+            }, 50); // Микро-задержка для перезапуска CSS транзиции
+
+            wordsLeft--;
+
+            // Запускаем таймеры
+            clearInterval(wordInterval);
+            wordInterval = setTimeout(nextWord, currentSpeed * 1000);
+        }
+
+        function stopFreestyle() {
+            clearInterval(wordInterval);
+            document.getElementById('freestyle-setup').classList.remove('hidden');
+            document.getElementById('freestyle-active').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>
